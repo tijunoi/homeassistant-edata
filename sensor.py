@@ -1,11 +1,13 @@
 import logging
-from dateutil.relativedelta import relativedelta
+import voluptuous as vol
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers import config_validation as cv
-import voluptuous as vol
+from homeassistant.core import callback
+from homeassistant.components import websocket_api
 from homeassistant.components.sensor import PLATFORM_SCHEMA
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 from edata.helpers import ReportHelper, PLATFORMS, ATTRIBUTES
 
 # HA variables
@@ -33,17 +35,59 @@ async def async_setup_platform(hass, config, add_entities, discovery_info=None):
     experimental = False
     if 'experimental' in config:
         experimental = config['experimental']
+    hass.data.setdefault(DOMAIN, {})
     edata = ReportHelper (config[CONF_PROVIDER], config[CONF_USERNAME], config[CONF_PASSWORD], config[CONF_CUPS], experimental=experimental)
-    entities.append(EdsSensor(edata, name=f'edata_{config[CONF_CUPS][-4:]}'))
+    await edata.async_update ()
+    entities.append(EdsSensor(hass, edata, name=f'edata_{config[CONF_CUPS][-4:]}'))
     add_entities(entities)
+
+    hass.components.websocket_api.async_register_command(
+        f"{DOMAIN}/consumptions/daily",
+        websocket_get_daily_data,
+        websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
+            vol.Required("type"): f"{DOMAIN}/consumptions/daily"
+        }),
+    )
+
+    hass.components.websocket_api.async_register_command(
+        f"{DOMAIN}/consumptions/monthly",
+        websocket_get_monthly_data,
+        websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
+            vol.Required("type"): f"{DOMAIN}/consumptions/monthly"
+        }),
+    )
+
+    hass.components.websocket_api.async_register_command(
+        f"{DOMAIN}/maximeter",
+        websocket_get_maximeter,
+        websocket_api.BASE_COMMAND_MESSAGE_SCHEMA.extend({
+            vol.Required("type"): f"{DOMAIN}/maximeter"
+        }),
+    )
+
+@callback
+def websocket_get_daily_data(hass, connection, msg):
+    """Publish daily consumptions list data."""
+    connection.send_result(msg["id"], hass.data[DOMAIN]['consumptions_daily_sum'] if 'consumptions_daily_sum' in hass.data[DOMAIN] else [])
+
+@callback
+def websocket_get_monthly_data(hass, connection, msg):
+    """Publish monthly consumptions list data."""
+    connection.send_result(msg["id"], hass.data[DOMAIN]['consumptions_monthly_sum'] if 'consumptions_monthly_sum' in hass.data[DOMAIN] else [])
+
+@callback
+def websocket_get_maximeter(hass, connection, msg):
+    """Publish maximeter list data."""
+    connection.send_result(msg["id"], hass.data[DOMAIN]['maximeter'] if 'maximeter' in hass.data[DOMAIN] else [])
 
 class EdsSensor(Entity):
     """Representation of a Sensor."""
 
-    def __init__(self, edata, state='cups', name='edata'):
+    def __init__(self, hass, edata, state='cups', name='edata'):
         """Initialize the sensor."""
         self._state = None
         self._attributes = {}
+        self.hass = hass
         self.edata = edata
         self.state_label = state
         self._name = name
@@ -82,7 +126,10 @@ class EdsSensor(Entity):
         # update attrs
         for attr in self.edata.attributes:
             self._attributes[attr] = f"{self._get_attr_value(attr) if self._get_attr_value(attr) is not None else '-'} {ATTRIBUTES[attr] if ATTRIBUTES[attr] is not None else ''}"
-            
+
+        for i in self.edata.data:
+            self.hass.data[DOMAIN][i] = self.edata.data[i]
+        
         # update state
         self._state = self._get_attr_value('cups')
 
