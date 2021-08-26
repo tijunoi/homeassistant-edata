@@ -10,7 +10,7 @@ from homeassistant.helpers.storage import Store
 from edata.helpers import ReportHelper, ATTRIBUTES
 from .const import DOMAIN, STORAGE_VERSION, STORAGE_KEY_PREAMBLE
 from .websockets import *
-from .store import DateTimeEncoder
+from .store import DateTimeEncoder, DataTools
 
 # HA variables
 _LOGGER = logging.getLogger(__name__)
@@ -65,19 +65,15 @@ class EdataSensor(SensorEntity):
         self._helper = ReportHelper ('datadis', usr, pwd, cups, experimental=experimental)
 
     async def try_load_storage (self):
-        def datetime_parser(json_dict):
-            for (key, value) in json_dict.items():
-                try:
-                    json_dict[key] = datetime.fromisoformat(value)
-                except Exception:
-                    pass
-            return json_dict
         try:
             serialized_data = await self._store.async_load()
-            old_data = json.loads(json.dumps(serialized_data), object_hook=datetime_parser)
+            old_data = json.loads(json.dumps(serialized_data), object_hook=DataTools.datetime_parser)
             if old_data is not None and old_data != {}:
-                self._helper = ReportHelper ('datadis', self._usr, self._pwd, self._cups, data=old_data, experimental=self._experimental) # storage_dir='.storage'
-                self._helper.process_data ()
+                if DataTools.check_integrity(old_data):
+                    self._helper = ReportHelper ('datadis', self._usr, self._pwd, self._cups, data=old_data, experimental=self._experimental) # storage_dir='.storage'
+                    self._helper.process_data ()
+                else:
+                    _LOGGER.warning ('wrong database structure, wiping data')
         except Exception as e:
             _LOGGER.exception (e)
 
